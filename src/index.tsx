@@ -11,7 +11,7 @@ import {
 } from 'nostr-tools'
 
 const pool = new SimplePool()
-const relays = ['wss://yabu.me']
+const relays = ['wss://yabu.me', 'wss://relay-jp.nostr.wirednet.jp', 'wss://nos.lol', 'wss://relay.damus.io', 'wss://relay.nostr.band']
 
 type Bindings = {
     DB: D1Database
@@ -78,10 +78,14 @@ const Entry = (props: { results: Record[], name: string }) => (
         <body>
             <h1>{props.name}画像</h1>
             {props.results.map((result) => {
-                return <div><h3><a href={"https://nostter.app/" + result?.note}>{result?.note}</a></h3><img style="max-width: 500px" src={result?.image} /></div>
+                const url = new URL(result?.image);
+                if (url.pathname.endsWith('.mp4') || url.pathname.endsWith('.mov')) {
+                    return <div><h3><a href={"https://nostter.app/" + result?.note}>{result?.note}</a></h3><video controls style="width: 500px"><source src={result?.image} /></video></div>
+                }
+                return <div><h3><a href={"https://nostter.app/" + result?.note}>{result?.note}</a></h3><img style="width: 500px" src={result?.image} /></div>
             })}
         </body>
-    </html>
+    </html >
 );
 
 app.get(`/`, async (c) => {
@@ -127,36 +131,42 @@ app.post(`/command`, async (c) => {
         const event = await c.req.json<Event>()
         const tok = event.content.split(/\s+/)
         console.log(tok)
-        if (tok.length === 4) tok.shift()
-        if (tok.length !== 3) throw "bad command"
+        if (tok[0].startsWith('nostr:')) tok.shift()
+        if (tok[0].startsWith('@')) tok.shift()
+        if (tok.length < 3) throw "bad command"
         if (tok[1] === 'add') {
             const name = tok[0].replace(/画像$/, '')
-            const { type, data } = nip19.decode(tok[2].replace(/^(nostr:)/, ''))
-            let id = data
-            console.log(type, data)
-            switch (type) {
-                case 'note':
-                    id = data
-                    break;
-                case 'nevent':
-                    id = data.id
-                    break;
-                default:
-                    throw "bad type: " + type
-            }
-            const note = await pool.get(relays, {
-                ids: [id],
-            })
-            for (const image of note.content.match(/https?:\/\/[^\s]+/g)) {
-                await c.env.DB.prepare("INSERT INTO images(name, note, image, created_at) values(?, ?, ?, ?)").bind(name, nip19.noteEncode(note.id), image, note.created_at).run()
+            for (const item of tok.slice(2)) {
+                const { type, data } = nip19.decode(item.replace(/^(nostr:)/, ''))
+                let id = data
+                let getrelays = [...relays]
+                console.log(type, data)
+                switch (type) {
+                    case 'note':
+                        id = data
+                        break;
+                    case 'nevent':
+                        id = data.id
+                        getrelays = getrelays.concat(data.relays)
+                        break;
+                    default:
+                        throw "bad type: " + type
+                }
+                const note = await pool.get(getrelays, {
+                    ids: [id],
+                })
+                for (const image of note.content.match(/https?:\/\/[^\s]+/g)) {
+                    await c.env.DB.prepare("INSERT INTO images(name, note, image, created_at) values(?, ?, ?, ?)").bind(name, nip19.noteEncode(note.id), image, note.created_at).run()
+                }
             }
             return c.json(createReplyWithTags(c.env, event, 'OK', []))
         }
         if (tok[1] === 'delete') {
             const name = tok[0].replace(/画像$/, '')
-            const note = tok[2]
-            await c.env.DB.prepare("DELETE FROM images WHERE name = ? AND note = ?").bind(name, note).run()
-            return c.json(createReplyWithTags(c.env, event, 'OK', []))
+            for (const note of tok.slice(2)) {
+                await c.env.DB.prepare("DELETE FROM images WHERE name = ? AND note = ?").bind(name, note).run()
+                return c.json(createReplyWithTags(c.env, event, 'OK', []))
+            }
         }
         return c.json(createReplyWithTags(c.env, event, 'わかりません', []))
     } catch (e) {
