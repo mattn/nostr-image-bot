@@ -10,8 +10,8 @@ import {
     SimplePool,
 } from 'nostr-tools'
 
-const pool = new SimplePool()
-const relays = ['wss://yabu.me', 'wss://relay-jp.nostr.wirednet.jp', 'wss://nos.lol', 'wss://relay.damus.io', 'wss://relay.nostr.band']
+const pool = new SimplePool({ eoseSubTimeout: 30 * 1000, getTimeout: 30 * 1000 })
+const relays = ['wss://yabu.me', 'wss://relay-jp.nostr.wirednet.jp', 'wss://nos.lol', 'wss://relay.damus.io']
 
 type Bindings = {
     DB: D1Database
@@ -85,7 +85,7 @@ const Entry = (props: { results: Record[], name: string }) => (
                 return <div><h3><a href={"https://nostter.app/" + result?.note}>{result?.note}</a></h3><img style="width: 500px" src={result?.image} /></div>
             })}
         </body>
-    </html >
+    </html>
 );
 
 app.get(`/`, async (c) => {
@@ -152,12 +152,16 @@ app.post(`/command`, async (c) => {
                     default:
                         throw "bad type: " + type
                 }
+                console.log(id)
+                console.log(relays)
                 const note = await pool.get(getrelays, {
                     ids: [id],
                 })
+                console.log(note)
                 for (const image of note.content.match(/https?:\/\/[^\s]+/g)) {
                     await c.env.DB.prepare("INSERT INTO images(name, note, image, created_at) values(?, ?, ?, ?)").bind(name, nip19.noteEncode(note.id), image, note.created_at).run()
                 }
+                console.log("done")
             }
             return c.json(createReplyWithTags(c.env, event, 'OK', []))
         }
