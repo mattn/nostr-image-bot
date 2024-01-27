@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { html } from 'hono/html'
+import { serveStatic } from 'hono/cloudflare-workers'
 
 import {
     nip19,
@@ -18,6 +19,7 @@ type Bindings = {
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
+app.use('/public/*', serveStatic({ root: './' }))
 
 function createReplyWithTags(env: Env, mention: Event, message: string, tags: string[][]): Event {
     const decoded = nip19.decode(env.NULLPOGA_NSEC)
@@ -60,11 +62,14 @@ interface Record {
 const Top = (props: { results: Record[] }) => (
     <html>
         <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <title>画像bot</title>
+            <link rel="stylesheet" type="text/css" href="/public/style.css" media="all" />
         </head>
         <body>
+            <h1>Nostr 画像 bot</h1>
             {props.results.map((result) => {
-                return <div><h3><a href={"/" + result?.name}>{result?.name}</a></h3></div>
+                return <div class="name">📔 <a href={"/" + result?.name}>{result?.name}</a></div>
             })}
         </body>
     </html>
@@ -74,23 +79,39 @@ const Entry = (props: { results: Record[], name: string }) => (
     <html>
         <head>
             <title>{props.name}画像</title>
+            <link rel="stylesheet" type="text/css" href="/public/style.css" media="all" />
         </head>
         <body>
-            <h1>{props.name}画像</h1>
+            <h1><a href="/" class="anchor">👈</a> {props.name}画像</h1>
             {props.results.map((result) => {
                 const url = new URL(result?.image);
                 if (url.pathname.endsWith('.mp4') || url.pathname.endsWith('.mov')) {
-                    return <div><h3><a href={"https://nostter.app/" + result?.note}>{result?.note}</a></h3><video controls style="width: 500px"><source src={result?.image} /></video></div>
+                    return <div>
+                        <h4>✍️ <a href={"https://nostter.app/" + result?.note}>{result?.note}</a></h4>
+                        <div class="image-container"><video controls style="width: 500px"><source src={result?.image} /></video></div>
+                    </div>
                 }
-                return <div><h3><a href={"https://nostter.app/" + result?.note}>{result?.note}</a></h3><img style="width: 500px" src={result?.image} /></div>
+                return <div>
+                    <h4>✍️ <a href={"https://nostter.app/" + result?.note}>{result?.note}</a></h4>
+                    <div class="image-container"><img style="width: 500px" src={result?.image} loading="lazy" /></div>
+                </div>
             })}
         </body>
     </html>
 );
 
+app.get(`/export.json`, async (c) => {
+    try {
+        const results = await c.env.DB.prepare("SELECT * FROM images ORDER BY created_at").all<Record>()
+        return c.json(results.results, 200)
+    } catch (e) {
+        return c.json({ err: e }, 404)
+    }
+})
+
 app.get(`/`, async (c) => {
     try {
-        const results = await c.env.DB.prepare("SELECT DISTINCT name FROM images ORDER BY NAME").all<Record>()
+        const results = await c.env.DB.prepare("SELECT DISTINCT name FROM images ORDER BY name").all<Record>()
         const props = {
             results: results.results,
         }
@@ -103,7 +124,7 @@ app.get(`/`, async (c) => {
 app.get(`/:name`, async (c) => {
     try {
         const name = c.req.param('name').replace(/画像$/, '').trim()
-        const results = await c.env.DB.prepare("SELECT * FROM images WHERE name = ? ORDER BY ID").bind(name).all<Record>()
+        const results = await c.env.DB.prepare("SELECT * FROM images WHERE name = ? ORDER BY id").bind(name).all<Record>()
         const props = {
             results: results.results,
             name: name,
@@ -127,15 +148,22 @@ app.post(`/select`, async (c) => {
 });
 
 app.post(`/command`, async (c) => {
+    const event = await c.req.json<Event>()
     try {
-        const event = await c.req.json<Event>()
         const tok = event.content.split(/\s+/)
         console.log(tok)
         if (tok[0].startsWith('nostr:')) tok.shift()
         if (tok[0].startsWith('@')) tok.shift()
-        if (tok.length < 3) throw "bad command"
-        if (tok[1] === 'add') {
+        if (tok[1] === 'list') {
             const name = tok[0].replace(/画像$/, '')
+            return c.json(createReplyWithTags(c.env, event, 'https://image-bot.mattn-jp.workers.dev/' + encodeURI(name), []))
+        } else if (tok[1] === 'add') {
+            const name = tok[0].replace(/画像$/, '')
+            if (tok.length == 2) {
+                for (let t of event.tags.filter((x: any[]) => x[0] === 'e').map((e: any[]) => nip19.noteEncode(e[1]))) {
+                    tok.push(t)
+                }
+            }
             for (const item of tok.slice(2)) {
                 const { type, data } = nip19.decode(item.replace(/^(nostr:)/, ''))
                 let id = data
@@ -150,7 +178,7 @@ app.post(`/command`, async (c) => {
                         getrelays = getrelays.concat(data.relays)
                         break;
                     default:
-                        throw "bad type: " + type
+                        throw "変な種別: " + type
                 }
                 console.log(id)
                 console.log(relays)
@@ -159,22 +187,26 @@ app.post(`/command`, async (c) => {
                 })
                 console.log(note)
                 for (const image of note.content.match(/https?:\/\/[^\s]+/g)) {
-                    await c.env.DB.prepare("INSERT INTO images(name, note, image, created_at) values(?, ?, ?, ?)").bind(name, nip19.noteEncode(note.id), image, note.created_at).run()
+                    const results = await c.env.DB.prepare("SELECT * FROM images WHERE note = ?").bind(nip19.noteEncode(note.id)).all<Record>()
+                    if (results.results.length == 0) {
+                        await c.env.DB.prepare("INSERT INTO images(name, note, image, created_at) values(?, ?, ?, ?)").bind(name, nip19.noteEncode(note.id), image, note.created_at).run()
+                    }
                 }
                 console.log("done")
             }
             return c.json(createReplyWithTags(c.env, event, 'OK', []))
-        }
-        if (tok[1] === 'delete') {
+        } else if (tok[1] === 'delete') {
+            if (tok.length < 3) throw "変なコマンド"
             const name = tok[0].replace(/画像$/, '')
             for (const note of tok.slice(2)) {
                 await c.env.DB.prepare("DELETE FROM images WHERE name = ? AND note = ?").bind(name, note).run()
                 return c.json(createReplyWithTags(c.env, event, 'OK', []))
             }
+            return c.json(createReplyWithTags(c.env, event, 'OK', []))
         }
-        return c.json(createReplyWithTags(c.env, event, 'わかりません', []))
+        throw "変なコマンド"
     } catch (e) {
-        return c.json({ err: e }, 404)
+        return c.json(createReplyWithTags(c.env, event, 'エラーが発生しました: ' + e, []))
     }
 });
 

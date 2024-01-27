@@ -1,0 +1,17 @@
+body {
+    color: white;
+    background-color: #210148;
+}
+a {
+    color: #ccffff;
+    text-decoration: none;
+}
+.name {
+  font-weight: bold;
+}
+.anchor {
+    text-decoration: none;
+}
+.image-container {
+    margin-left: 1em;
+}
