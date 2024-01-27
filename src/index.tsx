@@ -78,6 +78,7 @@ const Top = (props: { results: Record[] }) => (
 const Entry = (props: { results: Record[], name: string }) => (
     <html>
         <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <title>{props.name}画像</title>
             <link rel="stylesheet" type="text/css" href="/public/style.css" media="all" />
         </head>
